@@ -3,18 +3,19 @@ import anndata as ad
 import numpy as np
 import pandas as pd
 from pyranges import read_gtf
+from sklearn.mixture import GaussianMixture
 from utils import parse_args, get_genes_from_gencode
 import warnings
 warnings.filterwarnings('ignore')
 
 
-def calculate_delta_aupr_for_celltype(delta_adata, delta_adata_permutation, gene_name, gene_chrom, gene_start, gene_end,
+def calculate_delta_aupr_for_celltype(delta_adata, gene_name, gene_chrom, gene_start, gene_end,
                                       celltype_key='type', celltypes=['Tumor', 'Normal'], distances=[5e5, 3e5, 1e5]):
     """
     Extract significant gene-peak links dynamically per cell type based on perturbation scores.
     Crucial Fix: Thresholding is now strictly intra-cell-type to ensure downstream Motif purity.
     """
-    peaks_df = delta_adata.var_names.str.split('-', expand=True)
+    peaks_df = delta_adata.var_names.to_series().str.split('-', expand=True)
     peak_chroms = peaks_df[0].values
     peak_starts = peaks_df[1].astype(int).values
     peak_ends = peaks_df[2].astype(int).values
@@ -28,11 +29,9 @@ def calculate_delta_aupr_for_celltype(delta_adata, delta_adata_permutation, gene
             continue
             
         adata_ct = delta_adata[ct_mask]
-        adata_perm_ct = delta_adata_permutation[ct_mask]
 
         # 2. Calculate cell-type specific Delta and Permutation background
         celltype_delta = np.abs(adata_ct.X.toarray()).mean(axis=0)
-        celltype_delta_perm = np.abs(adata_perm_ct.X.toarray()).mean(axis=0)
 
         # 3. Filter peaks per distance window using the specific cell type's background
         for dis in distances:
@@ -47,12 +46,20 @@ def calculate_delta_aupr_for_celltype(delta_adata, delta_adata_permutation, gene
 
             delta_window = celltype_delta[dist_mask]
             
-            # The background noise (avg_perturbation) is strictly from this cell type
-            avg_perturbation = np.mean(celltype_delta_perm[dist_mask])
-            print(f'CellType: {ct}, dis: {dis}, avg_perturbation: {avg_perturbation}')
+            X = delta_window.reshape(-1, 1)
+            try:
+                best_gmm = GaussianMixture(n_components=3, covariance_type='tied', random_state=42).fit(X)
+                means = best_gmm.means_.flatten()
+                signal_class = np.argmax(means)
+                gmm_labels = best_gmm.predict(X)
+                third_cluster_values = delta_window[gmm_labels == signal_class]
+                threshold = third_cluster_values.min()
+            except Exception as e:
+                print(f"GMM fitting failed for distance {dis}: {e}. Fallback to percentile.")
+                threshold = np.percentile(delta_window, bin_thres)
 
-            # 4. Extract significant links where Delta > Permutation Background
-            high_mask = delta_window > avg_perturbation
+            # 4. Extract significant links where delta > threshold
+            high_mask = delta_window > threshold
             significant_indices = np.where(dist_mask)[0][high_mask]
 
             if len(significant_indices) == 0:
@@ -68,7 +75,7 @@ def calculate_delta_aupr_for_celltype(delta_adata, delta_adata_permutation, gene
                     'gene_name': gene_name,
                     'peak': peak_name,
                     'delta': delta_val,
-                    'threshold_used': avg_perturbation # Added for transparency
+                    'threshold_used': threshold # Added for transparency
                 })
 
     return pd.DataFrame(link_results)
@@ -85,7 +92,7 @@ distances=[5e5]
 celltype_key='type'
 L = 500000
 top = 50
-
+bin_thres = 98
 gene_range_df = get_genes_from_gencode(os.path.join(data_dir, "gencode.v47.annotation.gtf"))
 link_results = pd.DataFrame()
 gene_pd = pd.read_csv(f"{data_dir}/perturbation_tumor/diff_exp_tumor_normal_gene_names_{tis}.csv")
@@ -102,11 +109,8 @@ for gene_name in gene_pd[ct].dropna().values[:top]:
         print(f"Analyzing tissue: {tis}, gene: {gene_name}, chrom: {gene_chrom}, gene_start: {gene_start}, gene_end: {gene_end}")
 
         gene_atac_delta_adata = ad.read_h5ad(data_dir + f"/perturbation_tumor/gene_peak_regulation/atac_delta_tumor_normal_{ct}_{gene_name}_{gene_chrom}.h5ad")
-        gene_atac_delta_adata_permutation = ad.read_h5ad(data_dir + f"/perturbation_tumor/gene_peak_regulation_permutation/atac_delta_tumor_normal_{ct}_{gene_name}_{gene_chrom}_permutation.h5ad")
         gene_atac_delta_adata.obs['tissue'] = [obs_tissue_dict[x] for x in gene_atac_delta_adata.obs.batch.values]
-        gene_atac_delta_adata_permutation.obs['tissue'] = [obs_tissue_dict[x] for x in gene_atac_delta_adata_permutation.obs.batch.values]
         gene_atac_delta_adata.obs[celltype_key] = np.where(gene_atac_delta_adata.obs.cell_type == 'Tumor', 'Tumor', 'Normal')
-        gene_atac_delta_adata_permutation.obs[celltype_key] = np.where(gene_atac_delta_adata_permutation.obs.cell_type == 'Tumor', 'Tumor', 'Normal')
 
         peaks = [
             peak for peak in gene_atac_delta_adata.var_names 
@@ -114,12 +118,11 @@ for gene_name in gene_pd[ct].dropna().values[:top]:
             (peak.split('-'))
         ]
         gene_atac_delta_adata = gene_atac_delta_adata[gene_atac_delta_adata.obs.tissue == tis, peaks]
-        gene_atac_delta_adata_permutation = gene_atac_delta_adata_permutation[gene_atac_delta_adata_permutation.obs.tissue==tis, peaks]
         # Compute strictly intra-cell-type links
         links = calculate_delta_aupr_for_celltype(
-            gene_atac_delta_adata, gene_atac_delta_adata_permutation, gene_name, gene_chrom, gene_start, gene_end, celltype_key, celltypes, distances
+            gene_atac_delta_adata, gene_name, gene_chrom, gene_start, gene_end, celltype_key, celltypes, distances
         )
-        del gene_atac_delta_adata, gene_atac_delta_adata_permutation
+        del gene_atac_delta_adata
 
         links.to_csv(data_dir + f"/perturbation_tumor/gene_peak_links/{tis}_{ct}_{gene_name}_nearby_links.csv")
     else:

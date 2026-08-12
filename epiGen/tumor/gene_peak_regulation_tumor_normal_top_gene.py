@@ -1,30 +1,20 @@
-import argparse
 import os
 import anndata as ad
-import torch
-import random
 import numpy as np
 import pandas as pd
-import seaborn as sns
 import scanpy as sc
-import episcanpy as epi
-import copy
-import scipy.sparse as sp
-from scipy.sparse import csr_matrix
-from pyranges import read_gtf
-from scipy.stats import pearsonr
-from statsmodels.stats.multitest import multipletests
 from sklearn.metrics import average_precision_score, roc_auc_score, matthews_corrcoef, f1_score
-from utils import parse_cal_label_args, tfidf_seurat, get_genes_from_gencode, calculate_celltype_specific_correlation_with_labels
+from sklearn.mixture import GaussianMixture
+from utils import parse_cal_label_args, tfidf_seurat, top_k_metrics, get_genes_from_gencode, calculate_celltype_specific_correlation_with_labels
 import warnings
 warnings.filterwarnings('ignore')
 
 
-def calculate_delta_aupr_for_celltype(delta_adata, delta_adata_permutation,
-                                      labels, gene_name, gene_chrom, gene_start, gene_end,
+def calculate_delta_aupr_for_celltype(delta_adata, pred_correlations, labels, pred_labels,
+                                      gene_name, gene_chrom, gene_start, gene_end,
                                       ct='Tumor', distances=[5e5, 3e5, 1e5]):
     """
-    Calculate AUPR and AUROC by comparing model-predicted perturbation values (delta) 
+    Evaluate the prediction performance (AUPR, AUROC, F1, MCC, and top@K) of perturbation delta and correlation-based scores
     against the Ground Truth labels across different proximity windows.
     """
     bool_peak = []
@@ -42,45 +32,119 @@ def calculate_delta_aupr_for_celltype(delta_adata, delta_adata_permutation,
     
     # Aggregate perturbations across cells
     delta_values = np.abs(delta_adata.X).mean(axis=0)
-    delta_values_permutation = np.abs(delta_adata_permutation.X).mean(axis=0)
 
     # Process metrics if labels exist for the target cell type
     if ct in labels.columns:
         ct_labels = labels[ct]
+        ct_pred_labels = pred_labels[ct]
+        ct_pred_correlations = pred_correlations[ct]
         
         for idx, dis in enumerate(distances):
             # Extract subset based on distance window
             delta_values_range = delta_values[bool_peak[idx]]
             
-            # Use permutation background to set binarization threshold
-            avg_perturbation = np.mean(delta_values_permutation[bool_peak[idx]])
-            delta_values_binary = np.where(delta_values_range > avg_perturbation, 1, 0).astype(np.int32)
+            # Use GMM to set binarization threshold
+            X = delta_values_range.reshape(-1, 1)
+            try:
+                best_gmm = GaussianMixture(n_components=3, covariance_type='tied', random_state=42).fit(X)
+                means = best_gmm.means_.flatten()
+                signal_class = np.argmax(means)
+                gmm_labels = best_gmm.predict(X)
+                delta_values_binary = (gmm_labels == signal_class).astype(int)
+            except Exception as e:
+                print(f"GMM fitting failed for distance {dis}: {e}. Fallback to percentile.")
+                threshold = np.percentile(delta_values_range, bin_thres)
+                delta_values_binary = np.where(delta_values_range > threshold, 1, 0).astype(np.int32)
             
             # Align Ground Truth labels and predictions
             aligned_data = pd.DataFrame({
                 'label': ct_labels[bool_peak[idx]].values,
                 'delta': delta_values_range,
                 'delta_binary': delta_values_binary,
+                'preds': ct_pred_correlations[bool_peak[idx]].values,
+                'preds_label': ct_pred_labels[bool_peak[idx]].values
             }).dropna()
             
-            print(f"dis: {dis}, avg_perturbation: {avg_perturbation}, positive peak: {aligned_data['delta_binary'].sum()}")
             
             pos_ratio = aligned_data['label'].mean()
             
             # Prevent undefined metrics when class variance is zero
             if pos_ratio == 0 or pos_ratio == 1:
                 print(f"Warning: All labels are same for cell type {ct}, AUPR undefined")
-                aupr, auroc, mcc, f1 = np.nan, np.nan, np.nan, np.nan
+                aupr = np.nan
+                auroc = np.nan
+                mcc = np.nan
+                f1 = np.nan
+                prec10_delta = np.nan
+                prec50_delta = np.nan
+                prec100_delta = np.nan
+                rec10_delta = np.nan
+                rec50_delta = np.nan
+                rec100_delta = np.nan
+                preds_aupr = np.nan
+                preds_auroc = np.nan
+                preds_mcc = np.nan
+                preds_f1 = np.nan
+                prec10_preds = np.nan
+                prec50_preds = np.nan
+                prec100_preds = np.nan
+                rec10_preds = np.nan
+                rec50_preds = np.nan
+                rec100_preds = np.nan
             else:
                 try:
-                    aupr = average_precision_score(aligned_data['label'], aligned_data['delta'])
-                    auroc = roc_auc_score(aligned_data['label'], aligned_data['delta'])
+                    aupr = average_precision_score(
+                        aligned_data['label'],
+                        aligned_data['delta']
+                    )
+                    auroc = roc_auc_score(
+                        aligned_data['label'],
+                        aligned_data['delta']
+                    )
                     mcc = matthews_corrcoef(aligned_data['label'], aligned_data['delta_binary'])
                     f1 = f1_score(aligned_data['label'], aligned_data['delta_binary'])
+                    prec10_delta, rec10_delta = top_k_metrics(aligned_data['label'].values, aligned_data['delta'].values, 10)
+                    prec50_delta, rec50_delta = top_k_metrics(aligned_data['label'].values, aligned_data['delta'].values, 50)
+                    prec100_delta, rec100_delta = top_k_metrics(aligned_data['label'].values, aligned_data['delta'].values, 100)
                 except Exception as e:
                     print(f"Error calculating metrics for {ct}: {e}")
-                    aupr, auroc, mcc, f1 = np.nan, np.nan, np.nan, np.nan
-            
+                    aupr = np.nan
+                    auroc = np.nan
+                    mcc = np.nan
+                    f1 = np.nan
+                    prec10_delta = np.nan
+                    prec50_delta = np.nan
+                    prec100_delta = np.nan
+                    rec10_delta = np.nan
+                    rec50_delta = np.nan
+                    rec100_delta = np.nan
+
+                try:
+                    preds_aupr = average_precision_score(
+                        aligned_data['label'],
+                        aligned_data['preds']
+                    )
+                    preds_auroc = roc_auc_score(
+                        aligned_data['label'],
+                        aligned_data['preds']
+                    )
+                    preds_mcc = matthews_corrcoef(aligned_data['label'], aligned_data['preds_label'])
+                    preds_f1 = f1_score(aligned_data['label'], aligned_data['preds_label'])
+                    prec10_preds, rec10_preds = top_k_metrics(aligned_data['label'].values, aligned_data['preds'].values, 10)
+                    prec50_preds, rec50_preds = top_k_metrics(aligned_data['label'].values, aligned_data['preds'].values, 50)
+                    prec100_preds, rec100_preds = top_k_metrics(aligned_data['label'].values, aligned_data['preds'].values, 100)
+                except Exception as e:
+                    print(f"Error calculating metrics for {ct}: {e}")
+                    preds_aupr = np.nan
+                    preds_auroc = np.nan
+                    preds_mcc = np.nan
+                    preds_f1 = np.nan
+                    prec10_preds = np.nan
+                    prec50_preds = np.nan
+                    prec100_preds = np.nan
+                    rec10_preds = np.nan
+                    rec50_preds = np.nan
+                    rec100_preds = np.nan
             # Store results
             aupr_results[str(dis)] = {
                 'dis': str(dis),
@@ -89,13 +153,29 @@ def calculate_delta_aupr_for_celltype(delta_adata, delta_adata_permutation,
                 'auroc_delta_vs_label': auroc,
                 'mcc_delta_vs_label': mcc,
                 'f1_delta_vs_label': f1,
+                'top10_prec_delta_vs_label': prec10_delta,
+                'top50_prec_delta_vs_label': prec50_delta,
+                'top100_prec_delta_vs_label': prec100_delta,
+                'top10_rec_delta_vs_label': rec10_delta,
+                'top50_rec_delta_vs_label': rec50_delta,
+                'top100_rec_delta_vs_label': rec100_delta,
+                'auroc_preds_vs_label': preds_auroc,
+                'aupr_preds_vs_label': preds_aupr,
+                'mcc_preds_vs_label': preds_mcc,
+                'f1_preds_vs_label': preds_f1,
+                'top10_prec_preds_vs_label': prec10_preds,
+                'top50_prec_preds_vs_label': prec50_preds,
+                'top100_prec_preds_vs_label': prec100_preds,
+                'top10_rec_preds_vs_label': rec10_preds,
+                'top50_rec_preds_vs_label': rec50_preds,
+                'top100_rec_preds_vs_label': rec100_preds,
                 'n_total_peaks': len(aligned_data),
                 'n_positive_peaks': int(aligned_data['label'].sum()),
                 'positive_ratio': pos_ratio,
                 'mean_delta': aligned_data['delta'].mean(),
                 'std_delta': aligned_data['delta'].std()
             }
-            
+    
     return pd.DataFrame(aupr_results).T
 
 
@@ -126,7 +206,7 @@ top = 10
 pval_threshold = 0.05
 corr_threshold = 0.01
 min_pct = 0.05
-
+bin_thres = 98
 # Normalize RNA globally
 rna_list_mat = rna_list.copy()
 sc.pp.normalize_total(rna_list_mat, 1e4)
@@ -134,6 +214,14 @@ sc.pp.log1p(rna_list_mat)
 
 # Apply TF-IDF to ATAC globally
 atac_list.X = tfidf_seurat(atac_list)
+atac_tumor_pred = ad.read_h5ad(data_dir + "/prediction/tumor/allchr_tumor_tumorcell_bins.h5ad")
+atac_normal_pred = ad.read_h5ad(data_dir + "/prediction/tumor/allchr_tumor_normalcell_bins.h5ad")
+atac_normal_pred.X = atac_normal_pred.X.astype('int8')
+atac_tumor_pred.obs[celltype_key] = 'Tumor'
+atac_normal_pred.obs[celltype_key] = 'Normal'
+atac_pred = ad.concat([atac_tumor_pred, atac_normal_pred], axis=0)
+atac_pred.obs['tissue'] = [obs_tissue_dict[x] for x in atac_pred.obs.batch.values]
+atac_pred.X = tfidf_seurat(atac_pred)
 
 # Load annotations
 gene_range_df = get_genes_from_gencode(os.path.join(data_dir, "gencode.v47.annotation.gtf"))
@@ -155,15 +243,12 @@ for gene_name in gene_pd[ct].dropna().values[:top]:
     search_start, search_end = gene_start - L, gene_end + L
     print(f"Analyzing tissue: {tis}, gene: {gene_name}, chrom: {gene_chrom}, gene_start: {gene_start}, gene_end: {gene_end}")
 
-    # Load Perturbation Results (Actual vs Permutation)
+    # Load Perturbation Results
     gene_atac_delta_adata = ad.read_h5ad(data_dir + f"/perturbation_tumor/gene_peak_regulation/atac_delta_tumor_normal_{ct}_{gene_name}_{gene_chrom}.h5ad")
-    gene_atac_delta_adata_permutation = ad.read_h5ad(data_dir + f"/perturbation_tumor/gene_peak_regulation_permutation/atac_delta_tumor_normal_{ct}_{gene_name}_{gene_chrom}_permutation.h5ad")
     
     # Sync metadata for the loaded perturbations
     gene_atac_delta_adata.obs['tissue'] = [obs_tissue_dict[x] for x in gene_atac_delta_adata.obs.batch.values]
-    gene_atac_delta_adata_permutation.obs['tissue'] = [obs_tissue_dict[x] for x in gene_atac_delta_adata_permutation.obs.batch.values]
     gene_atac_delta_adata.obs[celltype_key] = np.where(gene_atac_delta_adata.obs.cell_type == 'Tumor', 'Tumor', 'Normal')
-    gene_atac_delta_adata_permutation.obs[celltype_key] = np.where(gene_atac_delta_adata_permutation.obs.cell_type == 'Tumor', 'Tumor', 'Normal')
 
     # Filter out irrelevant ATAC peaks far from the gene body to save memory/time
     peaks = [
@@ -172,17 +257,16 @@ for gene_name in gene_pd[ct].dropna().values[:top]:
         if p[0] == gene_chrom and int(p[2]) >= search_start and int(p[1]) <= search_end
     ]
     atac_test_mat = atac_list[rna_list_mat.obs_names, peaks].copy()
+    atac_pred_mat = atac_pred[rna_list_mat.obs_names, peaks].copy()
     
     # Filter Perturbation matrices to only contain targeted cell types and tissues
     mask_delta = (gene_atac_delta_adata.obs.tissue == tis) & (gene_atac_delta_adata.obs[celltype_key] == ct)
     gene_atac_delta_adata = gene_atac_delta_adata[mask_delta, atac_test_mat.var_names]
     
-    mask_perm = (gene_atac_delta_adata_permutation.obs.tissue == tis) & (gene_atac_delta_adata_permutation.obs[celltype_key] == ct)
-    gene_atac_delta_adata_permutation = gene_atac_delta_adata_permutation[mask_perm, atac_test_mat.var_names]
-    
     # Prepare biological evaluation matrices
     rna_test_mat = rna_list_mat[rna_list_mat.obs.tissue==tis]
     atac_test_mat = atac_test_mat[atac_test_mat.obs.tissue==tis]
+    atac_pred_mat = atac_pred_mat[atac_pred_mat.obs.tissue==tis]
 
     print("=" * 60)
     print("rna_test_mat shape: ", rna_test_mat.shape)
@@ -202,15 +286,29 @@ for gene_name in gene_pd[ct].dropna().values[:top]:
     else:
         labels = pd.read_csv(label_path, index_col=0)
 
+    pred_label_path = os.path.join(label_save_dir, f"{tis}_{gene_name}_{ct}_nearby_pred_labels.csv")
+    if not os.path.exists(pred_label_path):
+        pred_correlations, _, _, pred_labels = \
+            calculate_celltype_specific_correlation_with_labels(
+                rna_test_mat, atac_pred_mat, gene_name, celltype_key, ct,
+                min_pct=min_pct, pval_threshold=pval_threshold,
+                corr_threshold=corr_threshold
+            )
+        pred_correlations.to_csv(label_save_dir + f"/{tis}_{gene_name}_{ct}_nearby_pred_correlations.csv")
+        pred_labels.to_csv(pred_label_path)
+    else:
+        pred_correlations = pd.read_csv(pred_label_path + f"/{tis}_{gene_name}_{ct}_nearby_pred_correlations.csv", index_col=0)
+        pred_labels = pd.read_csv(pred_label_path, index_col=0)
+
     # 4. Evaluate Perturbation Model using Ground Truth Labels
     aupr_delta_labels = calculate_delta_aupr_for_celltype(
-        gene_atac_delta_adata, gene_atac_delta_adata_permutation, labels, gene_name, gene_chrom, gene_start, gene_end, ct, distances
+        gene_atac_delta_adata, pred_correlations, labels, pred_labels, gene_name, gene_chrom, gene_start, gene_end, ct, distances
     )
     aupr_delta_labels['gene_chrom'] = [gene_chrom] * len(distances)
     aupr_delta_labels['gene_start'] = [gene_start] * len(distances)
     aupr_delta_labels['gene_end'] = [gene_end] * len(distances)
 
-    del gene_atac_delta_adata, gene_atac_delta_adata_permutation, rna_test_mat, atac_test_mat
+    del gene_atac_delta_adata, pred_correlations, labels, pred_labels, rna_test_mat, atac_test_mat, atac_pred_mat
     
     with pd.option_context('display.max_columns', None, 'display.width', None):
         print(aupr_delta_labels[['aupr_delta_vs_label', 'auroc_delta_vs_label', 'mcc_delta_vs_label', 'f1_delta_vs_label', 'positive_ratio', 'n_total_peaks', 'n_positive_peaks']].round(4))

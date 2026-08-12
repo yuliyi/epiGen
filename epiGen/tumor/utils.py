@@ -271,6 +271,34 @@ def tfidf_seurat(adata: ad.AnnData, scale_factor=10000) -> None:
     return X_tfidf
 
 
+def top_k_metrics(y_true, y_score, k):
+    if len(y_true) == 0: 
+        return np.nan, np.nan
+        
+    # Sort scores in descending order
+    sorted_idx = np.argsort(y_score)[::-1]
+    y_true_sorted = np.array(y_true)[sorted_idx]
+    
+    # Actual top K, limited by the total number of candidates
+    actual_k = min(k, len(y_true_sorted))
+    if actual_k == 0:
+        return 0.0, 0.0
+        
+    top_k_labels = y_true_sorted[:actual_k]
+    
+    # Top-K Precision: Proportion of True positives within the top K
+    precision_at_k = np.sum(top_k_labels) / actual_k
+    
+    # Top-K Recall: Proportion of True positives in the top K out of all actual positives
+    total_positives = np.sum(y_true)
+    if total_positives == 0:
+        recall_at_k = np.nan
+    else:
+        recall_at_k = np.sum(top_k_labels) / total_positives
+        
+    return precision_at_k, recall_at_k
+
+
 def calculate_celltype_specific_correlation_with_labels(rna_adata, atac_adata, gene_name='LEF1', 
                                                        celltype_key='type', ct='Tumor',
                                                        min_pct=0.05, pval_threshold=0.05, corr_threshold=0.1):
