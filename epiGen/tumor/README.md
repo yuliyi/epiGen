@@ -38,7 +38,7 @@ Parameters for Steps 1–2:
 
 --cuda: The specific GPU device ID to use.
 
-Step 4: Visualize Results
+Step 3: Visualize Results
 
 Open and run the visualization notebook: `gene_peak_regulation_tumor_normal_top_gene_plot.ipynb`
 
