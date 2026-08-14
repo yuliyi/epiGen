@@ -14,19 +14,7 @@ Parameters:
 
 --ct: The target cell type. Choose from [T, B, NK].
 
-### Step2: In silico perturbation with permutation
-
-To establish a baseline, run the following command to calculate the background scores using randomized permutations. These scores are used to binarize the delta scores generated in Step 1.
-
-```
-nohup python gene_peak_regulation_perturbation_permutation.py --data_dir /data_path --save_dir /model_path --ct T > permutation.log 2>&1 &
-```
-
-Parameters:
-
---ct: The target cell type. Choose from [T, B, NK].
-
-### Step3: Caculate the gene-peak association score, and evaluate the AUPRC of perturbation-derived associations
+### Step2: Caculate the gene-peak association score, and evaluate the AUPRC of perturbation-derived associations
 
 Compute the final gene–peak association scores and evaluate the overall predictive performance. This script calculates the Area Under the Precision-Recall Curve (AUPRC) to quantify the accuracy of the perturbation-derived associations.
 
@@ -38,7 +26,7 @@ Parameters:
 
 --ct: The target cell type. Choose from [T, B, NK].
 
-### Step4: Visualize the results
+### Step3: Visualize the results
 
 Once the evaluations are complete, you can generate visualizations of the association scores and model performance.
 
