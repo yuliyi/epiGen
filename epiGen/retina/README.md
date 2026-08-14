@@ -6,7 +6,7 @@ This section explores cell type-specific regulatory programs within retina spati
 
 Visualize spatial enrichment within the corresponding retinal layer domains, and quantitative compare perturbation scores between target cell spots and non-target spots for each cell type.
 
-Open and run the following notebook: `atlas_tumor.ipynb`
+Open and run the following notebook: `deal_st_plot.ipynb`
 
 ### 2. In silico perturbation for cell type-specific cells
 
