@@ -20,15 +20,7 @@ Calculate the delta scores for your target gene in a specific tissue and state.
 nohup python gene_peak_regulation_perturbation_tumor_normal.py --tis pancreas --cuda 5 --ct Tumor --gene_name ALCAM > perturbation_tumor_pancreas_ALCAM.log 2>&1 &
 ```
 
-Step2: Permutation-based background scoring
-
-Calculate the background scores via random permutations.
-
-```
-nohup python gene_peak_regulation_perturbation_permutation_tumor_normal.py --tis pancreas --cuda 4 --ct Tumor --gene_name ALCAM > perturbation_permutation_tumor_pancreas_ALCAM.log 2>&1 &
-```
-
-Step 3: Calculate association scores and evaluate AUPRC
+Step 2: Calculate association scores and evaluate AUPRC
 
 Compute the final gene–peak association scores and evaluate the Area Under the Precision-Recall Curve (AUPRC).
 
@@ -36,7 +28,7 @@ Compute the final gene–peak association scores and evaluate the Area Under the
 nohup python gene_peak_regulation_tumor_normal_top_gene.py --tis pancreas --ct Tumor > pancreas_tumor.log 2>&1 &
 ```
 
-Parameters for Steps 1–3:
+Parameters for Steps 1–2:
 
 --tis: Target tissue. Choose from [pancreas, uterus, colon, breast, skin, tongue].
 
@@ -92,7 +84,7 @@ findMotifsGenome.pl /path/perturbation_tumor/gene_peak_links/pancreas_target_pea
 
 Step 4: Identify regulatory programs
 
-Return to the `gene_peak_regulation_tumor_delta_peak.ipynb` notebook and sequentially execute the remaining sections. This final step filters the enrichment results to identify and isolate candidate tumor-associated TF-peak-gene regulatory programs.
+Return to the `gene_peak_regulation_tumor_delta_peak.ipynb` notebook and sequentially execute the remaining sections. This final step filters the enrichment results to identify and isolate candidate tumor-associated TF-CRE-gene regulatory programs.
 
 ### 5. State classification
 
