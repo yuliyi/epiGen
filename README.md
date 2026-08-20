@@ -60,6 +60,11 @@ Step-by-step tutorials for downstream experiments are provided in the repository
 | Cell-type-specific gene–peak association | Infers cell-type-specific gene–peak regulatory associations via in sillico perturbation.            | `epiGen/gene-peak` folder    |
 | Distance-dependent and HiChIP analysis   | Validates inferred gene–peak regulatory links based on genomic distance decay and HiChIP data.      | `epiGen/hichip` folder       |
 | TME regulatory analysis                  | Dissects tissue- and cell-type-specific regulatory networks within tumor microenvironments.         | `epiGen/tumor` folder        |
+| retina regulatory analysis               | Dissects cell-type-specific regulatory networks for retina layers.                                  | `epiGen/retina` folder       |
+
+## Data Availability
+
+The processed data used in this study are publicly available on Figshare: [https://doi.org/10.6084/m9.figshare.33228324](https://doi.org/10.6084/m9.figshare.33228324)
 
 ## Citation
 
